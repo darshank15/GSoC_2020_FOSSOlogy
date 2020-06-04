@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# Copyright (C) 2020 Orange
+# SPDX-License-Identifier: GPL-2.0
+# Author: Nicolas Toussaint <nicolas1.toussaint@orange.com>
+# Author: Drozdz Bartlomiej <bartlomiej.drozdz@orange.com>
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# version 2 as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+echo
+echo "$(date) - $0 - $*"
+
+# FIXME: File location may not work outside of Docker environment
+. /usr/local/etc/fossology/fossdash.conf
+[ -z "$FOSSDASH_URL" ] && echo "Missing FOSSDASH_URL variable. Exiting." && exit 0
+
+which python >/dev/null || exit 1
+database=${FOSSDASH_DB_NAME:-fossology_db}
+
+tmp_file=$(mktemp /tmp/$(basename $0).XXXXXX)
+python $(dirname $0)/fossdash-publish.py "$@" > $tmp_file || exit 1
+
+echo
+echo "Generated $(cat $tmp_file | wc -l) lines"
+echo "tmp_file= $tmp_file"
+echo "Fossology instance IDs:"
+sed 's/.*instance=\([^ ]*\).*$/\1/'  $tmp_file | sort | uniq | cat -n
+
+f_post_data() {
+   curl \
+    --silent --show-error --output /dev/null \
+    -i -XPOST "$FOSSDASH_URL/write?db=$database" \
+    --data-binary @$1
+}
+
+echo
+echo "Sending metrics to ${FOSSDASH_URL}"
+f_post_data $tmp_file || exit 1
+
+# mark as 'send'
+mv $tmp_file $tmp_file.reported
+
+# list files that were generated but not sent
+not_yet_sent=`ls /tmp/ --ignore=*.reported|grep $(basename $0)`
+
+# send them one by one, then rename/delete
+for report_file in $not_yet_sent
+do
+    echo "Sending previusly prepared report: /tmp/$report_file"
+	f_post_data /tmp/$report_file
+    echo "Reporting file moved to /tmp/$report_file.reported"
+    mv /tmp/$report_file /tmp/$report_file.reported
+done
+
